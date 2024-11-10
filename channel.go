@@ -17,6 +17,7 @@ import (
 	"github.com/LincolnG4/GoMDF/blocks/DZ"
 	"github.com/LincolnG4/GoMDF/blocks/HL"
 	"github.com/LincolnG4/GoMDF/blocks/SI"
+	"github.com/tunabay/go-bitarray"
 )
 
 type ChannelGroup struct {
@@ -92,13 +93,16 @@ type ChannelReader struct {
 
 	DataType interface{}
 
-	DataAddress int64
+	DataAddress     int64
+	NextDataAddress int64
 
 	MeasureBuffer []byte
 
 	//Length of the row in block
 	RowSize int64
 
+	BitCount  uint32
+	BitOffset uint8
 	//Offset in the row
 	StartOffset int64
 }
@@ -113,6 +117,8 @@ func (c *Channel) loadChannelReader(addr int64) *ChannelReader {
 		StartOffset:    int64(c.block.Data.ByteOffset) + int64(c.recordIDSize()),
 		RowSize:        int64(c.ChannelGroup.Data.DataBytes),
 		MeasureBuffer:  c.DataGroup.CachedDataGroup,
+		BitCount:       c.block.Data.BitCount,
+		BitOffset:      c.block.Data.BitOffset,
 	}
 }
 
@@ -131,19 +137,17 @@ func (cn *ChannelReader) readBlockToMemory(f *os.File) error {
 
 func (cn *ChannelReader) readDatablock(f *os.File, pos int64) (interface{}, error) {
 	//check if end of datablock
-	if pos+int64(cn.SizeMeasureRow) > int64(len(cn.MeasureBuffer)) {
-		length, err := blocks.GetLength(f, cn.DataAddress)
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, length)
-		err = readBlockFromFile(f, cn.DataAddress, buf)
+	if pos+cn.SizeMeasureRow > int64(len(cn.MeasureBuffer)) {
+		diff := pos + cn.SizeMeasureRow - int64(len(cn.MeasureBuffer))
+		buf := make([]byte, diff)
+		err := readBlockFromFile(f, cn.DataAddress, buf)
 		if err != nil {
 			return nil, err
 		}
 		cn.MeasureBuffer = append(cn.MeasureBuffer, buf...)
 	}
-	return parseSignalMeasure(cn.MeasureBuffer[pos:pos+int64(cn.SizeMeasureRow)], cn.ByteOrder, cn.DataType)
+	return parseSignalMeasure(cn.MeasureBuffer[pos:pos+cn.SizeMeasureRow],
+		cn.ByteOrder, cn.DataType, int(cn.BitOffset), int(cn.BitCount))
 }
 
 func (c *Channel) PrintProperties() {
@@ -167,6 +171,9 @@ func (c *Channel) readDataList(measure *[]interface{}) error {
 		c.channelReader = c.newChannelReader(dtl.Link.Data[i])
 		if err != nil {
 			return err
+		}
+		if i+1 < int(dtl.Data.Count) {
+			c.channelReader.NextDataAddress = dtl.Link.Data[i+1]
 		}
 
 		if c.compressedHL {
@@ -249,7 +256,9 @@ func (c *Channel) readSdBlock(measure *[]interface{}) error {
 	length = binary.LittleEndian.Uint32(c.channelReader.MeasureBuffer[pos : pos+4])
 	pos += 4
 
-	value, err = parseSignalMeasure(c.channelReader.MeasureBuffer[pos:pos+int64(length)], c.channelReader.ByteOrder, c.channelReader.DataType)
+	value, err = parseSignalMeasure(c.channelReader.MeasureBuffer[pos:pos+int64(length)],
+		c.channelReader.ByteOrder, c.channelReader.DataType,
+		int(c.channelReader.BitOffset), int(c.channelReader.BitCount))
 	if err != nil {
 		return err
 	}
@@ -317,15 +326,15 @@ func (c *Channel) readVLSDSample(id string, measure *[]interface{}) error {
 	case blocks.DlID:
 		return c.readDataList(measure)
 	case blocks.DzID:
-		fmt.Println(id)
-		return fmt.Errorf("package not ready to read this file")
+		return c.readDataZipped(measure)
+	case blocks.HlID:
+		return c.readHeaderList(measure)
 	case blocks.CgID:
 		return c.readSingleDataBlockVLSD()
 	default:
 		fmt.Println(id)
 		return fmt.Errorf("package not ready to read this file")
 	}
-
 }
 
 // readFixedLenghtSample extracts samples from channel type Fixed Length Signal
@@ -368,11 +377,12 @@ func (c *Channel) Sample() ([]interface{}, error) {
 	if !c.mf4.IsMemoryOptimized() {
 		c.CachedSamples = sample
 	}
+
 	return sample, nil
 }
 
-func parseSignalMeasure(data []byte, byteOrder binary.ByteOrder, dataType interface{}) (interface{}, error) {
-	switch v := dataType.(type) {
+func parseSignalMeasure(data []byte, byteOrder binary.ByteOrder, dataType interface{}, offset, bitcount int) (interface{}, error) {
+	switch dataType.(type) {
 	case string:
 		return string(data), nil
 	case []uint8:
@@ -381,49 +391,71 @@ func parseSignalMeasure(data []byte, byteOrder binary.ByteOrder, dataType interf
 		return int8(data[0]), nil
 	case uint8:
 		return data[0], nil
+	}
+
+	// For types larger than 1 byte, handle byte order and bit extraction
+	if byteOrder == binary.LittleEndian {
+		data = reverseBytes(data)
+	}
+
+	buf := bitarray.NewBufferFromByteSlice(data)
+	off := (len(data) * 8) - offset - bitcount
+	value := buf.BitArrayAt(off, bitcount).ToUint64()
+
+	// Fast path type switches for remaining types
+	switch v := dataType.(type) {
 	case int16:
 		if len(data) < 2 {
 			return nil, fmt.Errorf("not enough data to read int16")
 		}
-		return int16(byteOrder.Uint16(data)), nil
+		return int16(value), nil
 	case uint16:
 		if len(data) < 2 {
 			return nil, fmt.Errorf("not enough data to read uint16")
 		}
-		return byteOrder.Uint16(data), nil
+		return uint16(value), nil
 	case int32:
 		if len(data) < 4 {
 			return nil, fmt.Errorf("not enough data to read int32")
 		}
-		return int32(byteOrder.Uint32(data)), nil
+		return int32(value), nil
 	case uint32:
 		if len(data) < 4 {
 			return nil, fmt.Errorf("not enough data to read uint32")
 		}
-		return byteOrder.Uint32(data), nil
+		return uint32(value), nil
 	case int64:
 		if len(data) < 8 {
 			return nil, fmt.Errorf("not enough data to read int64")
 		}
-		return int64(byteOrder.Uint64(data)), nil
+		return int64(value), nil
 	case uint64:
 		if len(data) < 8 {
 			return nil, fmt.Errorf("not enough data to read uint64")
 		}
-		return byteOrder.Uint64(data), nil
+		return value, nil
 	case float32:
 		if len(data) < 4 {
 			return nil, fmt.Errorf("not enough data to read float32")
 		}
-		return math.Float32frombits(byteOrder.Uint32(data)), nil
+		return math.Float32frombits(uint32(value)), nil
 	case float64:
 		if len(data) < 8 {
 			return nil, fmt.Errorf("not enough data to read float64")
 		}
-		return math.Float64frombits(byteOrder.Uint64(data)), nil
+		return math.Float64frombits(value), nil
 	default:
 		return nil, fmt.Errorf("unsupported data type: %T", v)
 	}
+}
+func reverseBytes(data []byte) []byte {
+	n := len(data)
+	// Create a new slice to store the reversed data
+	reversed := make([]byte, n)
+	for i := 0; i < n; i++ {
+		reversed[i] = data[n-i-1]
+	}
+	return reversed
 }
 
 func (c *Channel) loadDataAdress() {

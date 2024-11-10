@@ -1,5 +1,7 @@
 package DZ
 
+import "fmt"
+
 type Transposition struct {
 	//Decompressed ID
 	DecompressedID string
@@ -53,8 +55,8 @@ func (t *Transposition) Transpose(rows uint64, cols uint64, data *[]byte) {
 	transposed := make([]byte, len(arr))
 
 	var i, j uint64
-	for i = 0; i < cols; i++ {
-		for j = 0; j < rows; j++ {
+	for j = 0; j < rows; j++ {
+		for i = 0; i < cols; i++ {
 			// Transpose the element from (i, j) in the original to (j, i)
 			transposed[j*cols+i] = arr[i*rows+j]
 		}
@@ -63,5 +65,6 @@ func (t *Transposition) Transpose(rows uint64, cols uint64, data *[]byte) {
 	if remainingBytes != 0 {
 		transposed = append(transposed, extraBytes...)
 	}
+	fmt.Println(transposed[:20])
 	copy(*data, transposed)
 }

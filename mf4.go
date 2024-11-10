@@ -322,7 +322,10 @@ func (m *MF4) Sort(us UnsortedBlock) error {
 
 			cn := cg.Channels["vlsd"]
 			size = cn.block.SignalBytesRange()
-			value, err := parseSignalMeasure(buf[pos:pos+int(sampleLength)], cn.block.ByteOrder(), cn.block.LoadDataType(int(size)))
+			value, err := parseSignalMeasure(buf[pos:pos+int(sampleLength)],
+				cn.block.ByteOrder(), cn.block.LoadDataType(int(size)),
+				int(cn.block.Data.BitOffset), int(cn.block.Data.BitCount))
+
 			if err != nil {
 				return err
 			}
@@ -341,7 +344,9 @@ func (m *MF4) Sort(us UnsortedBlock) error {
 				bsize = offset + cn.block.Data.BitCount/8
 				size = cn.block.SignalBytesRange()
 
-				value, err := parseSignalMeasure(buf[pos+int(offset):pos+int(bsize)], cn.block.ByteOrder(), cn.block.LoadDataType(int(size)))
+				value, err := parseSignalMeasure(buf[pos+int(offset):pos+int(bsize)],
+					cn.block.ByteOrder(), cn.block.LoadDataType(int(size)),
+					int(cn.block.Data.BitOffset), int(cn.block.Data.BitCount))
 				if err != nil {
 					panic(err)
 				}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
+	"io"
 )
 
 type Flate struct {
@@ -29,18 +30,12 @@ func (f *Flate) Decompress() ([]byte, error) {
 
 func Deflate(data []byte) ([]byte, error) {
 	// Create a zlib reader directly from the file's limited reader
-	zr, err := zlib.NewReader(bytes.NewReader(data))
+	reader, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create zlib reader: %w", err)
+		return nil, fmt.Errorf("failed to create reader: %v", err)
 	}
-	defer zr.Close()
+	defer reader.Close()
 
-	// Use a bytes.Buffer for more controlled incremental reads
-	var buf bytes.Buffer
-	_, err = buf.ReadFrom(zr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read from zlib reader: %w", err)
-	}
-
-	return buf.Bytes(), nil
+	// Read and return the decompressed data
+	return io.ReadAll(reader)
 }
