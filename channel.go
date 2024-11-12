@@ -135,17 +135,7 @@ func (cn *ChannelReader) readBlockToMemory(f *os.File) error {
 	return readBlockFromFile(f, cn.DataAddress, cn.MeasureBuffer)
 }
 
-func (cn *ChannelReader) readDatablock(f *os.File, pos int64) (interface{}, error) {
-	//check if end of datablock
-	if pos+cn.SizeMeasureRow > int64(len(cn.MeasureBuffer)) {
-		diff := pos + cn.SizeMeasureRow - int64(len(cn.MeasureBuffer))
-		buf := make([]byte, diff)
-		err := readBlockFromFile(f, cn.DataAddress, buf)
-		if err != nil {
-			return nil, err
-		}
-		cn.MeasureBuffer = append(cn.MeasureBuffer, buf...)
-	}
+func (cn *ChannelReader) readDatablock(pos int64) (interface{}, error) {
 	return parseSignalMeasure(cn.MeasureBuffer[pos:pos+cn.SizeMeasureRow],
 		cn.ByteOrder, cn.DataType, int(cn.BitOffset), int(cn.BitCount))
 }
@@ -160,18 +150,18 @@ func (c *Channel) readDataList(measure *[]interface{}) error {
 		return err
 	}
 
-	id, err := blocks.GetHeaderID(c.mf4.File, dtl.Link.Data[0])
+	startAddress := dtl.Link.Data[0]
+	id, err := blocks.GetHeaderID(c.mf4.File, startAddress)
 	if err != nil {
 		return err
 	}
 
+	c.channelReader = c.newChannelReader(startAddress)
+
 	target := len(dtl.Link.Data)
 	i := 0
 	for i < target {
-		c.channelReader = c.newChannelReader(dtl.Link.Data[i])
-		if err != nil {
-			return err
-		}
+		c.channelReader.DataAddress = dtl.Link.Data[i]
 		if i+1 < int(dtl.Data.Count) {
 			c.channelReader.NextDataAddress = dtl.Link.Data[i+1]
 		}
@@ -222,10 +212,20 @@ func (c *Channel) readDT(measure *[]interface{}) error {
 	pos := c.channelReader.StartOffset
 	for i := uint64(0); i < c.ChannelGroup.Data.CycleCount; i++ {
 		if pos >= int64(len(c.channelReader.MeasureBuffer)) {
+			remaining := int64(len(c.channelReader.MeasureBuffer) % int(c.channelReader.RowSize))
+			if remaining > 0 {
+				var shift int64 = 0
+				if remaining != 0 {
+					shift = c.channelReader.RowSize - remaining
+				}
+
+				// Calculate new position using modular arithmetic
+				c.channelReader.StartOffset = (c.channelReader.StartOffset + shift) % c.channelReader.RowSize
+			}
 			return nil
 		}
 
-		value, err = c.channelReader.readDatablock(c.mf4.File, pos)
+		value, err = c.channelReader.readDatablock(pos)
 		if err != nil {
 			return err
 		}
